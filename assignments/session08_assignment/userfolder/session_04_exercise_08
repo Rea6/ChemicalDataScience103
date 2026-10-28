@@ -1,0 +1,172 @@
+    #Import the libraries
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+from sklearn.datasets import load_wine
+from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier
+
+
+#Main analysis function
+def main():
+    #Create a folder for the plots and results
+    output_folder = Path(__file__).resolve().parent / "wine_eda_output"
+    output_folder.mkdir(exist_ok=True)
+    sns.set_theme(style="whitegrid")
+
+    #--- 1. Load data ---
+    print("Loading dataset...")
+    wine = load_wine()
+    df = pd.DataFrame(wine.data, columns=wine.feature_names)
+    #Add a target column
+    df["target"] = wine.target
+
+    #Print basic information
+    print("\nDataset shape:", df.shape)
+    print("\nColumn names:\n", df.columns.tolist())
+    print("\nFirst 10 rows:\n", df.head(10).to_string())
+    print("\nSummary statistics:\n", df.describe().round(2).to_string())
+
+    #--- 2. Basic exploration ---
+    #Count samples for each wine class
+    print("\nNumber of samples in each class:\n", df["target"].value_counts().sort_index().to_string())
+    #Check missing values and duplicate rows
+    print("\nMissing values by column:\n", df.isna().sum().to_string())
+    print("\nTotal duplicate rows:", df.duplicated().sum())
+
+    #--- 3. Visualisations ---
+    #Create and save a pairplot of selected features
+    selected_features = ["alcohol", "malic_acid", "flavanoids", "color_intensity", "proline"]
+    pairplot = sns.pairplot(df, vars=selected_features, hue="target", corner=True)
+    pairplot.figure.suptitle("Wine features by class", y=1.02)
+    pairplot.savefig(output_folder / "pairplot.png", dpi=150, bbox_inches="tight")
+    plt.close(pairplot.figure)
+
+    #Create and save a boxplot comparing flavanoids by class
+    plt.figure(figsize=(8, 5))
+    sns.boxplot(data=df, x="target", y="flavanoids", hue="target", legend=False)
+    plt.title("Flavanoids by wine class")
+    plt.xlabel("Wine class")
+    plt.ylabel("Flavanoids")
+    plt.tight_layout()
+    plt.savefig(output_folder / "boxplot.png", dpi=150)
+    plt.close()
+
+    #Create a heatmap with correlations between the chemical features
+    correlation = df.drop(columns="target").corr()
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(correlation, cmap="coolwarm", center=0, vmin=-1, vmax=1)
+    plt.title("Correlation heatmap of wine features")
+    plt.tight_layout()
+    plt.savefig(output_folder / "heatmap.png", dpi=150)
+    plt.close()
+
+    #Print the strongest positive and negative correlations
+    correlation_pairs = correlation.where(pd.DataFrame(
+        [[i < j for j in range(len(correlation))] for i in range(len(correlation))],
+        index=correlation.index, columns=correlation.columns
+    )).stack().sort_values()
+    print("\nStrongest negative feature correlations:\n", correlation_pairs.head(5).round(3).to_string())
+    print("\nStrongest positive feature correlations:\n", correlation_pairs.tail(5).sort_values(ascending=False).round(3).to_string())
+
+    #--- 4. Scaling and PCA ---
+    #Separate the input features and the target labels
+    X = df.drop(columns="target")
+    y = df["target"]
+
+    #Standardise the full dataset for exploratory PCA
+    scaler = StandardScaler()
+    X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=X.columns, index=X.index)
+    X_scaled.to_csv(output_folder / "scaled_features.csv", index=False)
+
+    #Reduce the 13 chemical features to two principal components
+    pca = PCA(n_components=2)
+    pca_values = pca.fit_transform(X_scaled)
+    pca_df = pd.DataFrame(pca_values, columns=["PC1", "PC2"])
+    pca_df["target"] = y.to_numpy()
+    print("\nPCA explained variance ratio:", pca.explained_variance_ratio_.round(4))
+    print("Total variance explained by two PCs:", round(pca.explained_variance_ratio_.sum(), 4))
+
+    #Plot the two principal components and colour points by wine class
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue="target", palette="deep")
+    plt.title("PCA of the Wine dataset")
+    plt.tight_layout()
+    plt.savefig(output_folder / "pca_scatterplot.png", dpi=150)
+    plt.close()
+
+    #--- 5. Classification models ---
+    #Split data into 80 percent training and 20 percent testing
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    #Fit the scaler only on the training data to avoid data leakage
+    train_scaler = StandardScaler()
+    X_train_scaled = train_scaler.fit_transform(X_train)
+    X_test_scaled = train_scaler.transform(X_test)
+
+    #Create the three classification models
+    #Logistic regression is used because the target contains class labels
+    models = {
+        "Logistic regression": LogisticRegression(max_iter=1000, random_state=42),
+        "Decision tree": DecisionTreeClassifier(random_state=42),
+        "Random forest": RandomForestClassifier(random_state=42),
+    }
+
+    #Train and evaluate each model using all 13 features
+    full_accuracies = {}
+    print("\nAccuracy using all 13 scaled features:")
+    for name, model in models.items():
+        model.fit(X_train_scaled, y_train)
+        predictions = model.predict(X_test_scaled)
+        full_accuracies[name] = accuracy_score(y_test, predictions)
+        print(f"{name}: {full_accuracies[name]:.3f}")
+
+    #Display the most important features for the tree-based models
+    feature_importances = pd.DataFrame({
+        "Decision tree": models["Decision tree"].feature_importances_,
+        "Random forest": models["Random forest"].feature_importances_,
+    }, index=X.columns)
+    print("\nDecision tree feature importance:\n",
+          feature_importances["Decision tree"].sort_values(ascending=False).round(3).to_string())
+    print("\nRandom forest feature importance:\n",
+          feature_importances["Random forest"].sort_values(ascending=False).round(3).to_string())
+    feature_importances.to_csv(output_folder / "feature_importances.csv")
+
+    #Fit PCA on the training features only to avoid data leakage
+    train_pca = PCA(n_components=2)
+    X_train_pca = train_pca.fit_transform(X_train_scaled)
+    X_test_pca = train_pca.transform(X_test_scaled)
+
+    #Train and evaluate new models using just the two principal components
+    print("\nAccuracy using the first two principal components:")
+    pca_accuracies = {}
+    for name, model in models.items():
+        #Create a new model with the same settings for the PCA comparison
+        pca_model = type(model)(**model.get_params())
+        pca_model.fit(X_train_pca, y_train)
+        predictions = pca_model.predict(X_test_pca)
+        pca_accuracies[name] = accuracy_score(y_test, predictions)
+        print(f"{name}: {pca_accuracies[name]:.3f}")
+
+    #Save the accuracy comparison to a file
+    results = pd.DataFrame({
+        "All 13 features": full_accuracies,
+        "2 PCA components": pca_accuracies,
+    })
+    print("\nModel comparison:\n", results.round(3).to_string())
+    results.to_csv(output_folder / "model_comparison.csv")
+    print("\nAll plots and CSV files saved in:", output_folder)
+
+
+#Entry point
+if __name__ == "__main__":
+    main()
